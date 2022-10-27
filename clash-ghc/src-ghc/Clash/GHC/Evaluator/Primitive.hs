@@ -16,6 +16,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE UnboxedTuples #-}
 
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Clash.GHC.Evaluator.Primitive
   ( ghcPrimStep
   , ghcPrimUnwind

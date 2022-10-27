@@ -125,13 +125,17 @@ ghcTypeToHWType iw = go
           ExceptT $ MaybeT $ Just <$> coreTypeToHWType go reprs m (args !! 1)
 
         "Clash.Signal.BiSignal.BiSignalIn" -> do
-          let [_, _, szTy] = args
+          szTy <- case args of
+            [_, _, szTy] -> pure szTy
+            _ -> throwE $ $(curLoc) ++ "BiSignalIn TC has unexpected amount of arguments"
           let fType ty1 = FilteredHWType ty1 []
           (fType . BiDirectional In . BitVector . fromInteger) <$>
             liftE (tyNatSize m szTy)
 
         "Clash.Signal.BiSignal.BiSignalOut" -> do
-          let [_, _, szTy] = args
+          szTy <- case args of
+            [_, _, szTy] -> pure szTy
+            _ -> throwE $ $(curLoc) ++ "BiSignalOut TC has unexpected amount of arguments"
           let fType ty1 = FilteredHWType ty1 []
           (fType . Void . Just . BiDirectional Out . BitVector . fromInteger) <$>
             liftE (tyNatSize m szTy)
@@ -213,50 +217,53 @@ ghcTypeToHWType iw = go
              then returnN (Void (Just (Unsigned (fromInteger n))))
              else returnN (Unsigned (fromInteger n))
 
-        "Clash.Sized.Vector.Vec" -> do
-          let [szTy,elTy] = args
-          sz0     <- liftE (tyNatSize m szTy)
-          fElHWTy <- ExceptT $ MaybeT $ Just <$> coreTypeToHWType go reprs m elTy
+        "Clash.Sized.Vector.Vec" -> case args of
+          [szTy,elTy] -> do
+            sz0     <- liftE (tyNatSize m szTy)
+            fElHWTy <- ExceptT $ MaybeT $ Just <$> coreTypeToHWType go reprs m elTy
 
-          -- Treat Vec as a product type with a single constructor and N
-          -- constructor fields.
-          let sz1    = fromInteger sz0 :: Int
-              elHWTy = stripFiltered fElHWTy
+            -- Treat Vec as a product type with a single constructor and N
+            -- constructor fields.
+            let sz1    = fromInteger sz0 :: Int
+                elHWTy = stripFiltered fElHWTy
 
-          let
-            (isVoid, vecHWTy) =
-              case elHWTy of
-                Void {}      -> (True, Void (Just (Vector sz1 elHWTy)))
-                _ | sz1 == 0 -> (True, Void (Just (Vector sz1 elHWTy)))
-                _            -> (False, Vector sz1 elHWTy)
+            let
+              (isVoid, vecHWTy) =
+                case elHWTy of
+                  Void {}      -> (True, Void (Just (Vector sz1 elHWTy)))
+                  _ | sz1 == 0 -> (True, Void (Just (Vector sz1 elHWTy)))
+                  _            -> (False, Vector sz1 elHWTy)
 
-          let filtered = [replicate sz1 (isVoid, fElHWTy)]
-          return (FilteredHWType vecHWTy filtered)
+            let filtered = [replicate sz1 (isVoid, fElHWTy)]
+            return (FilteredHWType vecHWTy filtered)
+          _ -> throwE $ $(curLoc) ++ "Vec TC has unexpected amount of arguments"
 
-        "Clash.Explicit.BlockRam.Internal.MemBlob" -> do
-          let [nTy, mTy] = args
-          n0 <- liftE (tyNatSize m nTy)
-          m0 <- liftE (tyNatSize m mTy)
-          returnN (MemBlob (fromInteger n0) (fromInteger m0))
+        "Clash.Explicit.BlockRam.Internal.MemBlob" -> case args of
+          [nTy,mTy] -> do
+            n0 <- liftE (tyNatSize m nTy)
+            m0 <- liftE (tyNatSize m mTy)
+            returnN (MemBlob (fromInteger n0) (fromInteger m0))
+          _ -> throwE $ $(curLoc) ++ "MemBlob TC has unexpected amount of arguments"
 
-        "Clash.Sized.RTree.RTree" -> do
-          let [szTy,elTy] = args
-          sz0     <- liftE (tyNatSize m szTy)
-          fElHWTy <- ExceptT $ MaybeT $ Just <$> coreTypeToHWType go reprs m elTy
+        "Clash.Sized.RTree.RTree" -> case args of
+          [szTy,elTy] -> do
+            sz0     <- liftE (tyNatSize m szTy)
+            fElHWTy <- ExceptT $ MaybeT $ Just <$> coreTypeToHWType go reprs m elTy
 
-          -- Treat RTree as a product type with a single constructor and 2^N
-          -- constructor fields.
-          let sz1    = fromInteger sz0 :: Int
-              elHWTy = stripFiltered fElHWTy
+            -- Treat RTree as a product type with a single constructor and 2^N
+            -- constructor fields.
+            let sz1    = fromInteger sz0 :: Int
+                elHWTy = stripFiltered fElHWTy
 
-          let
-            (isVoid, vecHWTy) =
-              case elHWTy of
-                Void {} -> (True, Void (Just (RTree sz1 elHWTy)))
-                _       -> (False, RTree sz1 elHWTy)
+            let
+              (isVoid, vecHWTy) =
+                case elHWTy of
+                  Void {} -> (True, Void (Just (RTree sz1 elHWTy)))
+                  _       -> (False, RTree sz1 elHWTy)
 
-          let filtered = [replicate (2^sz1) (isVoid, fElHWTy)]
-          return (FilteredHWType vecHWTy filtered)
+            let filtered = [replicate (2^sz1) (isVoid, fElHWTy)]
+            return (FilteredHWType vecHWTy filtered)
+          _ -> throwE $ $(curLoc) ++ "RTree TC has unexpected amount of arguments"
 
         "String" -> returnN String
         "GHC.Prim.Addr#" -> returnN String
@@ -273,13 +280,13 @@ ghcTypeToHWType iw = go
 
         "Clash.Explicit.SimIO.File" -> returnN FileType
 
-        "Clash.Explicit.SimIO.Reg" -> do
-          let [aTy] = args
-          ExceptT (MaybeT (Just <$> coreTypeToHWType go reprs m aTy))
+        "Clash.Explicit.SimIO.Reg" -> case args of
+          [aTy] -> ExceptT (MaybeT (Just <$> coreTypeToHWType go reprs m aTy))
+          _ -> throwE $ $(curLoc) ++ "Reg TC has unexpected amount of arguments"
 
-        "GHC.STRef.STRef" -> do
-          let [_,aTy] = args
-          ExceptT (MaybeT (Just <$> coreTypeToHWType go reprs m aTy))
+        "GHC.STRef.STRef" -> case args of
+          [_,aTy] -> ExceptT (MaybeT (Just <$> coreTypeToHWType go reprs m aTy))
+          _ -> throwE $ $(curLoc) ++ "STRef TC has unexpected amount of arguments"
 
         _ -> ExceptT (MaybeT (pure Nothing))
 
