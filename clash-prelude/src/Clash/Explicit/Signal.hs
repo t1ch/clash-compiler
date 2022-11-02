@@ -451,8 +451,10 @@ unsafeSynchronizer clk1 clk2 =
  where
   toEither :: forall dom. KnownDomain dom => Clock dom -> Either Int (Signal dom Int)
   toEither (Clock _ maybePeriods)
-    | Just periods <- maybePeriods = Right (fromIntegral <$> periods)
+    | Just periods <- maybePeriods = Right (fromIntegral . unFemtoseconds <$> periods)
     | otherwise = Left (snatToNum (clockPeriod @dom))
+
+  unFemtoseconds (Femtoseconds fs) = fs
 -- XXX: 'unsafeSynchronizer' shouldn't need a blackbox, but Clash doesn't currently
 --      clean up the 'toEither' logic correctly, leading to translation errors. We
 --      should improve dead code elimination and run it more often to fix this.
@@ -492,8 +494,12 @@ veryUnsafeSynchronizer t1e t2e =
     (Left  t1, Left  t2) | t1 == t2 -> same
     (Left  t1, Left  t2) -> goStatic t1 t2 0
     (Right t1, Right t2) -> goDynamic 0 t1 t2
-    (Left  t1, Right t2) -> veryUnsafeSynchronizer (Right (pure t1)) (Right t2)
-    (Right t1, Left  t2) -> veryUnsafeSynchronizer (Right t1) (Right (pure t2))
+    -- XXX: Dynamic clock periods are specified in /femtoseconds/, while static
+    --      clock periods are specified in /picoseconds/. We therefore need to
+    --      multiply by 1000 in case we get one static + one dynamic clock
+    --      periods.
+    (Left  t1, Right t2) -> veryUnsafeSynchronizer (Right (pure (t1 * 1000))) (Right t2)
+    (Right t1, Left  t2) -> veryUnsafeSynchronizer (Right t1) (Right (pure (t2 * 1000)))
 
  where
   -- If clock frequencies line up, we can return the signal unchanged

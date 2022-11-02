@@ -69,7 +69,7 @@ module Clash.Cores.Xilinx.DcFifo
   ) where
 
 import Clash.Explicit.Prelude
-import Clash.Signal.Internal (Clock (..), Signal (..))
+import Clash.Signal.Internal (Clock (..), Signal (..), Femtoseconds (..))
 import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import Data.String.Interpolate (__i)
@@ -259,16 +259,21 @@ dcFifo DcConfig{..} wClk wRst rClk rRst writeData rEnable =
   initState :: FifoState a
   initState = FifoState Seq.empty 0
 
+  unFemtoseconds (Femtoseconds fs) = fs
+
   wrClkSignal = case wClk of
-    Clock _ (Just wrPeriods) -> wrPeriods
+    Clock _ (Just wrPeriods) ->
+      unFemtoseconds <$> wrPeriods
     Clock _ Nothing ->
       let SDomainConfiguration _ (snatToNum -> period) _ _ _ _ = knownDomain @write in
-        pure period
+        pure (1000 * period)
+
   rdClkSignal = case rClk of
-    Clock _ (Just rdPeriods) -> rdPeriods
+    Clock _ (Just rdPeriods) ->
+      unFemtoseconds <$> rdPeriods
     Clock _ Nothing ->
       let SDomainConfiguration _ (snatToNum -> period) _ _ _ _ = knownDomain @read in
-        pure period
+        pure (1000 * period)
 {-# NOINLINE dcFifo #-}
 {-# ANN dcFifo (
    let primName = 'dcFifo

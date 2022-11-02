@@ -103,6 +103,7 @@ module Clash.Signal.Internal
     -- * Simulation and testbench functions
   , clockGen
   , tbClockGen
+  , Femtoseconds(..)  -- experimental, do not expose in public API
   , tbDynamicClockGen -- experimental, do not expose in public API
   , dynamicClockGen   -- experimental, do not expose in public API
   , resetGen
@@ -169,9 +170,9 @@ import System.IO.Unsafe           (unsafeInterleaveIO, unsafePerformIO)
 import Test.QuickCheck            (Arbitrary (..), CoArbitrary(..), Property,
                                    property)
 
-import Clash.CPP                  (fStrictMapSignal)
-import Clash.Promoted.Nat         (SNat (..), snatToNum, snatToNatural)
-import Clash.Promoted.Symbol      (SSymbol (..), ssymbolToString)
+import Clash.CPP                     (fStrictMapSignal)
+import Clash.Promoted.Nat            (SNat (..), snatToNum, snatToNatural)
+import Clash.Promoted.Symbol         (SSymbol (..), ssymbolToString)
 import Clash.XException
   (NFDataX(..), errorX, isX, deepseqX, defaultSeqX, seqX)
 
@@ -847,7 +848,7 @@ data Clock (dom :: Domain) = Clock
     -- | Periods of the clock. This is an experimental feature used to simulate
     -- clock frequency correction mechanisms. Currently, all ways to contruct
     -- such a clock are hidden from the public API.
-  , clockPeriods :: Maybe (Signal dom Natural)
+  , clockPeriods :: Maybe (Signal dom Femtoseconds)
   }
 
 instance Show (Clock dom) where
@@ -924,6 +925,13 @@ tbClockGen done = Clock (done `seq` SSymbol) Nothing
 {-# NOINLINE tbClockGen #-}
 {-# ANN tbClockGen hasBlackBox #-}
 
+-- | Femtoseconds expressed as a natural.
+--
+-- Note: Ideally this would be a friendlier type, such as @Unsigned@. However,
+--       GHC crashes if I try to import @Unsigned@ here.
+--
+newtype Femtoseconds = Femtoseconds Natural
+
 -- | Clock generator with dynamic clock periods for simulations. This is an
 -- experimental feature and hence not part of the public API.
 --
@@ -934,7 +942,23 @@ tbClockGen done = Clock (done `seq` SSymbol) Nothing
 -- @
 --
 -- See 'DomainConfiguration' for more information on how to use synthesis domains.
-dynamicClockGen :: KnownDomain dom => Signal dom Natural -> Clock dom
+dynamicClockGen ::
+  KnownDomain dom =>
+  -- | Clock period in /femto/seconds.
+  --
+  -- __N.B.__: Beware that the periods are given in femtoseconds; this differs
+  --           from the usual unit Clash uses to represent period length,
+  --           picoseconds.
+  --
+  -- __N.B.__: Beware that not all simulators support femtoseconds. For example,
+  --           Vivado's XSIM will round down to nearest picoseconds.
+  --
+  -- __N.B.__: Beware that a 'Natural' will be translated to an `Unsigned 64` on
+  --           64-bit platforms. This might get truncated to `Signed 32` or
+  --           `Signed 64` depending on your target language and simulator.
+  --
+  Signal dom Femtoseconds ->
+  Clock dom
 dynamicClockGen periods = tbDynamicClockGen periods (pure True)
 
 -- | Clock generator with dynamic clock periods for simulations. This is an
@@ -950,7 +974,20 @@ dynamicClockGen periods = tbDynamicClockGen periods (pure True)
 -- See 'DomainConfiguration' for more information on how to use synthesis domains.
 tbDynamicClockGen ::
   KnownDomain dom =>
-  Signal dom Natural ->
+  -- | Clock period in /femto/seconds.
+  --
+  -- __N.B.__: Beware that the periods are given in femtoseconds; this differs
+  --           from the usual unit Clash uses to represent period length,
+  --           picoseconds.
+  --
+  -- __N.B.__: Beware that not all simulators support femtoseconds. For example,
+  --           Vivado's XSIM will round down to nearest picoseconds.
+  --
+  -- __N.B.__: Beware that a 'Natural' will be translated to an `Unsigned 64` on
+  --           64-bit platforms. This might get truncated to `Signed 32` or
+  --           `Signed 64` depending on your target language and simulator.
+  --
+  Signal dom Femtoseconds ->
   Signal dom Bool ->
   Clock dom
 tbDynamicClockGen periods ena =

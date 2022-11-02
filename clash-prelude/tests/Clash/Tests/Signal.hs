@@ -23,7 +23,8 @@ import           Prelude hiding (undefined)
 import qualified Clash.Explicit.Prelude         as E
 import           Clash.Prelude                  hiding (sample)
 
-import           Clash.Signal.Internal          (dynamicClockGen, sample)
+import           Clash.Signal.Internal
+  (Femtoseconds(..), dynamicClockGen, sample)
 
 import           Control.Exception              (evaluate)
 import           Data.List                      (isInfixOf)
@@ -210,8 +211,8 @@ case_dynamicStaticEq = do
 
     clk11 = clockGen @H11
     clk77 = clockGen @H77
-    dclk11 = dynamicClockGen @H11 (pure (hzToPeriod 11))
-    dclk77 = dynamicClockGen @H77 (pure (hzToPeriod 77))
+    dclk11 = dynamicClockGen @H11 (pure (Femtoseconds (1000 * hzToPeriod 11)))
+    dclk77 = dynamicClockGen @H77 (pure (Femtoseconds (1000 * hzToPeriod 77)))
 
     counter :: forall dom. Signal dom Int
     counter = fromList [0..]
@@ -234,8 +235,8 @@ case_dynamicHasEffect = do
 
     clk11 = clockGen @H11
     clk77 = clockGen @H77
-    dclk11 = dynamicClockGen @H11 (pure (hzToPeriod 11))
-    dclk77lying = dynamicClockGen @H77 (pure (hzToPeriod 78))
+    dclk11 = dynamicClockGen @H11 (pure (Femtoseconds (1000 * hzToPeriod 11)))
+    dclk77lying = dynamicClockGen @H77 (pure (Femtoseconds (1000 * hzToPeriod 78)))
 
     counter :: forall dom. Signal dom Int
     counter = fromList [0..]
