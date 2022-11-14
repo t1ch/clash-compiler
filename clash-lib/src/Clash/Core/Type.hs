@@ -60,7 +60,9 @@ where
 -- External import
 import           Control.DeepSeq        as DS
 import           Data.Binary            (Binary)
+#if !MIN_VERSION_ghc(9,2,0)
 import           Data.Coerce            (coerce)
+#endif
 import           Data.Hashable          (Hashable (hashWithSalt))
 import           Data.List              (foldl')
 import           Data.List.Extra        (splitAtList)
@@ -73,9 +75,13 @@ import           GHC.TypeLits           (type TypeError, ErrorMessage(Text, (:<>
 
 -- GHC API
 #if MIN_VERSION_ghc(9,0,0)
+#if MIN_VERSION_ghc(9,2,0)
+#else
+import           GHC.Builtin.Names      (typeNatLeqTyFamNameKey)
+#endif
 import           GHC.Builtin.Names
   (integerTyConKey, typeNatAddTyFamNameKey, typeNatExpTyFamNameKey,
-   typeNatLeqTyFamNameKey, typeNatMulTyFamNameKey, typeNatSubTyFamNameKey,
+   typeNatMulTyFamNameKey, typeNatSubTyFamNameKey,
    typeNatCmpTyFamNameKey, ordLTDataConKey, ordEQDataConKey, ordGTDataConKey,
    typeSymbolAppendFamNameKey, typeSymbolCmpTyFamNameKey)
 import           GHC.Types.SrcLoc       (wiredInSrcSpan)
@@ -99,7 +105,9 @@ import           Unique                 (getKey)
 #endif
 
 -- Local imports
+#if !MIN_VERSION_ghc(9,2,0)
 import           Clash.Core.DataCon
+#endif
 import           Clash.Core.Name
 import {-# SOURCE #-} Clash.Core.Subst
 import           Clash.Core.TyCon
@@ -522,6 +530,7 @@ reduceTypeFamily tcm (tyView -> TyConApp tc tys)
         -> Just (LitTy (NumTy z))
       _ -> Nothing
 
+#if !MIN_VERSION_ghc(9,2,0)
   | nameUniq tc == getKey typeNatLeqTyFamNameKey
   = case mapMaybe (litView tcm) tys of
       [i1, i2]
@@ -532,6 +541,7 @@ reduceTypeFamily tcm (tyView -> TyConApp tc tys)
             in  if i1 <= i2 then Just (mkTyConApp trueTc [])
                             else Just (mkTyConApp falseTc [])
       _ -> Nothing
+#endif
 
   | nameUniq tc == getKey typeNatCmpTyFamNameKey -- "GHC.TypeNats.CmpNat"
   = case mapMaybe (litView tcm) tys of
