@@ -105,6 +105,7 @@ library
 
     -- From tests/shouldwork/LoadModules
     T1796
+    T2361
 
   other-modules:
     Paths_clash_testsuite
