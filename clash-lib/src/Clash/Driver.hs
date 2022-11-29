@@ -19,6 +19,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
+#if !HINT
+{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
+#endif
+
 module Clash.Driver where
 
 import           Control.Concurrent               (MVar, modifyMVar, modifyMVar_, newMVar, withMVar)
@@ -67,9 +73,13 @@ import           Data.Text.Prettyprint.Doc.Extra
   (Doc, LayoutOptions (..), PageWidth (..) , layoutPretty, renderLazy)
 import qualified Data.Time.Clock                  as Clock
 import           GHC.Stack                        (HasCallStack)
+
+#ifdef HINT
 import qualified Language.Haskell.Interpreter     as Hint
 import qualified Language.Haskell.Interpreter.Extension as Hint
 import qualified Language.Haskell.Interpreter.Unsafe as Hint
+#endif
+
 import qualified System.Directory                 as Directory
 import           System.Directory
   (doesPathExist, listDirectory, doesDirectoryExist, createDirectoryIfMissing,
@@ -513,6 +523,7 @@ generateHDL env design hdlState typeTrans peEval eval mainTopEntity startTime = 
       withMVar ioLockV . const $
         putStrLn ("Clash: Compiling " ++ topEntityS ++ " took " ++ topDiff)
 
+#ifdef HINT
 -- | Interpret a specific function from a specific module. This action tries
 -- two things:
 --
@@ -568,6 +579,7 @@ loadImportAndInterpret iPaths0 interpreterArgs topDir qualMod funcName typ = do
    langExts = map Hint.asExtension $
                 map show wantedLanguageExtensions ++
                 map ("No" ++ ) (map show unwantedLanguageExtensions)
+#endif
 
 -- | List of known BlackBoxFunctions used to prevent Hint from firing. This
 --  improves Clash startup times.
@@ -622,6 +634,7 @@ compilePrimitive idirs pkgDbs topDir (BlackBoxHaskell bbName wf usedArgs multiRe
       Just f -> pure f
       Nothing -> do
         Monad.when debugIsOn (putStr "Hint: interpreting " >> putStrLn (show fullName))
+#ifdef HINT
         let interpreterArgs = concatMap (("-package-db":) . (:[])) pkgDbs
         -- Compile a blackbox template function or fetch it from an already compiled file.
         r <- go interpreterArgs source
@@ -630,6 +643,9 @@ compilePrimitive idirs pkgDbs topDir (BlackBoxHaskell bbName wf usedArgs multiRe
           bbName
           id
           r
+#else
+        error "compilePrimitive: Clash was compiled without Hint support, can't load primitive."
+#endif
 
   pure (BlackBoxHaskell bbName wf usedArgs multiRes bbGenName (hash source, bbFunc))
  where
@@ -647,6 +663,7 @@ compilePrimitive idirs pkgDbs topDir (BlackBoxHaskell bbName wf usedArgs multiRe
       let new = base </> sub in
       Directory.createDirectory new >> return new
 
+#ifdef HINT
     go
       :: [String]
       -> Maybe Text
@@ -663,6 +680,7 @@ compilePrimitive idirs pkgDbs topDir (BlackBoxHaskell bbName wf usedArgs multiRe
 
     go args Nothing = do
       loadImportAndInterpret idirs args topDir qualMod funcName "BlackBoxFunction"
+#endif
 
 compilePrimitive idirs pkgDbs topDir
   (BlackBox pNm wf rVoid multiRes tkind () outputUsage libM imps fPlural incs rM riM templ) = do
@@ -697,6 +715,7 @@ compilePrimitive idirs pkgDbs topDir
     let BlackBoxFunctionName modNames funcName = bbGenName
         qualMod = intercalate "." modNames
     tmpDir <- getCanonicalTemporaryDirectory
+#ifdef HINT
     r <- withTempDirectory tmpDir "clash-prim-compile" $ \tmpDir' -> do
       let modDir = foldl (</>) tmpDir' (init modNames)
       Directory.createDirectoryIfMissing True modDir
@@ -704,6 +723,9 @@ compilePrimitive idirs pkgDbs topDir
       loadImportAndInterpret (tmpDir':idirs) iArgs topDir qualMod funcName "TemplateFunction"
     let hsh = hash (qualMod, source)
     processHintError (show bbGenName) pNm (BBFunction (Data.Text.unpack pNm) hsh) r
+#else
+    error "Clash was compiled without Hint support, can't load primitive."
+#endif
   parseBB ((THaskell,bbGenName),Nothing) = do
     let BlackBoxFunctionName modNames funcName = bbGenName
         qualMod = intercalate "." modNames
@@ -713,14 +735,19 @@ compilePrimitive idirs pkgDbs topDir
       case HashMap.lookup fullName knownTemplateFunctions of
         Just f -> pure f
         Nothing -> do
+#ifdef HINT
           r <- loadImportAndInterpret idirs iArgs topDir qualMod funcName "TemplateFunction"
           processHintError (show bbGenName) pNm id r
+#else
+          error "Clash was compiled without Hint support, can't load primitive."
+#endif
     pure (BBFunction (Data.Text.unpack pNm) hsh tf)
 
 compilePrimitive _ _ _ (Primitive pNm wf typ) =
   return (Primitive pNm wf typ)
 {-# SCC compilePrimitive #-}
 
+#ifdef HINT
 processHintError
   :: Monad m
   => String
@@ -744,6 +771,7 @@ processHintError fun bb go r = case r of
     error $ unwords [ "Encountered", errType, "while compiling blackbox template"
                     , "function", show fun, "for function", show bb ++ "."
                     , "Compilation reported: \n\n" ++ report ]
+#endif
 
 -- | Pretty print Components to HDL Documents
 createHDL

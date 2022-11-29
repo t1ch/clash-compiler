@@ -27,12 +27,16 @@ import           Clash.Signal.Internal
   (Femtoseconds(..), dynamicClockGen, sample)
 
 import           Control.Exception              (evaluate)
+#ifdef HINT
 import           Data.List                      (isInfixOf)
+#endif
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
+#ifdef HINT
 import qualified Language.Haskell.Interpreter   as Hint
 import           Language.Haskell.Interpreter   (OptionVal((:=)))
+#endif
 
 createDomain vSystem{vName="H11", vPeriod=hzToPeriod 11}
 createDomain vSystem{vName="H77", vPeriod=hzToPeriod 77}
@@ -43,6 +47,7 @@ createDomain vSystem{vName="F6", vPeriod=250}
 customTypeMark :: String
 customTypeMark = "You tried to apply an explicitly routed clock, reset, or enable line"
 
+#ifdef HINT
 typeCheck
   :: String
   -> IO (Either Hint.InterpreterError ())
@@ -66,6 +71,10 @@ assertCustomTypeError expectedErr expr = do
           <> "expected type error. Instead it contained: " <> show err
     Right () ->
       assertFailure "Expression should have failed to typecheck, but succeeded."
+
+acte :: String -> Assertion
+acte = assertCustomTypeError customTypeMark
+#endif
 
 main :: IO ()
 main = defaultMain tests
@@ -101,9 +110,6 @@ test5
    . ((b, Signal dom1 a), Signal dom2 a)
 test5 = undefined
 
-acte :: String -> Assertion
-acte = assertCustomTypeError customTypeMark
-
 tests :: TestTree
 tests =
   testGroup
@@ -122,6 +128,7 @@ tests =
           in  testCase "withReset behavior" (sampleN @System 6 sig @?= "aaabaa")
 
 #ifdef CLASH_MULTIPLE_HIDDEN
+#ifdef HINT
           -- See: https://github.com/clash-lang/clash-compiler/pull/669
         , testCase "test0nok_0" (acte "withReset resetGen test0")
         , testCase "test0nok_1" (acte "withReset (resetGen @System) test0")
@@ -172,6 +179,7 @@ tests =
           ++ "-> Signal dom4 a)" )
 
         , testCase "test5nok_0" (acte "withSpecificReset resetGen test5")
+#endif
 #endif
         , testCase "T1521" $
             let

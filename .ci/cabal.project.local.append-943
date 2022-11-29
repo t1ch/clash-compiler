@@ -1,0 +1,8 @@
+package clash-prelude
+  flags: -hint
+
+package clash-lib
+  flags: -hint
+
+package clash-testsuite
+  flags: -hint

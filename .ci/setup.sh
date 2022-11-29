@@ -81,6 +81,10 @@ if [ ! -f cabal.project.local ]; then
   if [[ "$GHC_HEAD" == "yes" ]]; then
     cat .ci/cabal.project.local.append-HEAD >> cabal.project.local
   fi
+
+  if [[ "$GHC_VERSION" == "9.4.2" ]]; then
+    cat .ci/cabal.project.local.append-943 >> cabal.project.local
+  fi
   set -u
 
   # Fix index-state to prevent rebuilds if Hackage changes between build -> test.

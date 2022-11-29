@@ -181,10 +181,12 @@ runClashTest = defaultMain $ clashTestRoot
               primitive for WrongReference.myMultiplyX. These names should be
               the same. |])
           }
+#ifdef HINT
         , runTest "T1945" def{
             hdlTargets=[VHDL]
           , expectClashFail=Just (def, "Template function for returned False")
           }
+#endif
         ]
       , clashTestGroup "InvalidPrimitive"
         [ runTest "InvalidPrimitive" def{
@@ -361,7 +363,9 @@ runClashTest = defaultMain $ clashTestRoot
         , runTest "NestedPrimitives" def{hdlSim=[]}
         , runTest "NestedPrimitives2" def{hdlSim=[]}
         , runTest "NORX" def
+#ifdef HINT
         , runTest "Parameters" def{hdlTargets=[VHDL]}
+#endif
         , runTest "PopCount" def
         , runTest "RecordSumOfProducts" def{hdlSim=[]}
         , runTest "Replace" def
@@ -419,7 +423,9 @@ runClashTest = defaultMain $ clashTestRoot
         , runTest "UnpackUndefined" def{hdlSim=[]}
         ]
       , clashTestGroup "BlackBox"
-        [ outputTest "TemplateFunction" def{hdlTargets=[VHDL]}
+        [
+#ifdef HINT
+          outputTest "TemplateFunction" def{hdlTargets=[VHDL]}
         , outputTest "BlackBoxFunction" def{hdlTargets=[VHDL]}
         , runTest "BlackBoxFunctionHO" def{hdlTargets=[VHDL]}
         , outputTest "ExternalPrimitive" def{hdlTargets=[VHDL]}
@@ -427,7 +433,9 @@ runClashTest = defaultMain $ clashTestRoot
         , outputTest "MultiResult" def{hdlTargets=[VHDL]}
         , runTest "DSL" def
         , runTest "MultiResult" def
-        , runTest "T919" def{hdlSim=[]}
+        ,
+#endif
+          runTest "T919" def{hdlSim=[]}
         , runTest "T1524" def
         , runTest "T1786" def{
             hdlTargets=[VHDL]
@@ -444,6 +452,7 @@ runClashTest = defaultMain $ clashTestRoot
       , clashTestGroup "BoxedFunctions"
         [ runTest "DeadRecursiveBoxed" def{hdlSim=[]}
         ]
+#ifdef HINT
       , clashTestGroup "Cores"
         [ clashTestGroup "Xilinx"
           [ let _opts = def{ hdlTargets=[VHDL, Verilog]
@@ -491,6 +500,7 @@ runClashTest = defaultMain $ clashTestRoot
             ]
           ]
         ]
+#endif
       , clashTestGroup "CSignal"
         [ runTest "MAC" def{hdlSim=[]}
         , runTest "CBlockRamTest" def{hdlSim=[]}
@@ -724,12 +734,14 @@ runClashTest = defaultMain $ clashTestRoot
         , runTest "GADTExistential" def{hdlSim=[]}
         , runTest "LocalPoly" def{hdlSim=[]}
         ]
+#ifdef HINT
       , clashTestGroup "PrimitiveGuards"
         [ runTest "WarnAlways" def{
             hdlTargets=[VHDL]
           , expectClashFail=Just (NoTestExitCode, "You shouldn't use 'primitive'!")
           }
         ]
+#endif
       , clashTestGroup "PrimitiveReductions"
         [ runTest "Lambda" def
         , runTest "ReplaceInt" def
@@ -848,7 +860,9 @@ runClashTest = defaultMain $ clashTestRoot
       , clashTestGroup "SynthesisAttributes"
         [ outputTest "Simple" def
         , outputTest "Product" def
+#ifdef HINT
         , outputTest "InstDeclAnnotations" def
+#endif
         , runTest "Product" def
         , outputTest "T1771" def
         ]
