@@ -428,6 +428,7 @@ module Clash.Explicit.BlockRam
   , blockRamU#
   , blockRam1#
   , trueDualPortBlockRam#
+  , writeRam
   )
 where
 
@@ -485,8 +486,8 @@ A version with implicit clocks can be found in "Clash.Prelude.BlockRam".
 
 {- $setup
 >>> import Clash.Explicit.Prelude as C
->>> import qualified Data.List as L
->>> :set -XDataKinds -XRecordWildCards -XTupleSections -XDeriveAnyClass -XDeriveGeneric
+>>> import qualified Data.Foldable as F
+>>> :set -XDataKinds -XRecordWildCards -XTupleSections -XDeriveAnyClass -XDeriveGeneric -XOverloadedLists
 >>> type InstrAddr = Unsigned 8
 >>> type MemAddr = Unsigned 5
 >>> type Value = Signed 8
@@ -1232,6 +1233,84 @@ data Conflict = Conflict
   , cfWW      :: !(MaybeX Bool) -- ^ Write/Write conflict
   , cfAddress :: !(MaybeX Int) }
 
+-- | Write to a RAM and account for undefined values in the write enable,
+-- address, and data to write. Return read after write value.
+--
+-- >>> let write ena addr dat = showX (F.toList (snd (writeRam d2 ena addr dat [10, 20 :: Int])))
+-- >>> write False 0 30
+-- "[10,20]"
+-- >>> write True 0 30
+-- "[30,20]"
+-- >>> write (errorX "X") 0 30
+-- "[undefined,20]"
+-- >>> write False (errorX "X") 30
+-- "[10,20]"
+-- >>> write True (errorX "X") 30
+-- "[undefined,undefined]"
+-- >>> write True 0 (errorX "X")
+-- "[undefined,20]"
+--
+writeRam ::
+  forall nAddrs a .
+  NFDataX a =>
+  SNat nAddrs ->
+  -- | Write enable
+  Bool ->
+  -- | Address
+  Int ->
+  -- | Data to write
+  a ->
+  -- | Memory to write to
+  Seq a ->
+  -- | (Read after write value, new memory)
+  (Maybe a, Seq a)
+writeRam nAddrs@SNat enable addr dat mem
+  -- Undefined enable and address
+  | Left enaMsg <- enableUndefined
+  , Left addrMsg <- addrUndefined
+  = let msg = "Unknown enable and address" <>
+              "\nWrite enable error message: " <> enaMsg <>
+              "\nAddress error message: " <> addrMsg
+      in ( Just (deepErrorX msg)
+        , Seq.fromFunction (natToNum @nAddrs)
+                            (unknownEnableAndAddr enaMsg addrMsg) )
+
+  -- Undefined enable
+  | Left enaMsg <- enableUndefined
+  = let msg = "Write enable unknown; position" <> show addr <>
+              "\nWrite enable error message: " <> enaMsg
+      in writeRam nAddrs True addr (deepErrorX msg) mem
+
+  -- Undefined address
+  | enable
+  , Left addrMsg <- addrUndefined
+  = ( Just (deepErrorX "Unknown address")
+    , Seq.fromFunction (natToNum @nAddrs) (unknownAddr addrMsg) )
+
+  -- Write
+  | enable
+  = (Just dat, Seq.update addr dat mem)
+  | otherwise
+
+  -- Read (do nothing)
+  = (Nothing, mem)
+  where
+  enableUndefined = isX enable
+  addrUndefined = isX addr
+
+  unknownEnableAndAddr :: String -> String -> Int -> a
+  unknownEnableAndAddr enaMsg addrMsg n =
+    deepErrorX ("Write enable and address unknown; position " <> show n <>
+                "\nWrite enable error message: " <> enaMsg <>
+                "\nAddress error message: " <> addrMsg)
+
+  unknownAddr :: String -> Int -> a
+  unknownAddr msg n =
+    deepErrorX ("Write enabled, but address unknown; position " <> show n <>
+                "\nAddress error message: " <> msg)
+
+
+
 -- [Note: eta port names for trueDualPortBlockRam]
 --
 -- By naming all the arguments and setting the -fno-do-lambda-eta-expansion GHC
@@ -1460,7 +1539,6 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA clkB enB weB addrB datB =
 
         // end trueDualPortBlockRam
 |]) #-}
-
 -- | Haskell model/primitive for 'trueDualPortBlockRam'.
 --
 trueDualPortBlockRam#, trueDualPortBlockRamWrapper ::
@@ -1512,16 +1590,6 @@ trueDualPortBlockRam# clkA enA weA addrA datA clkB enB weB addrB datB =
   initElement n =
     deepErrorX ("Unknown initial element; position " <> show n)
 
-  unknownEnableAndAddr :: String -> String -> Int -> a
-  unknownEnableAndAddr enaMsg addrMsg n =
-    deepErrorX ("Write enable and address unknown; position " <> show n <>
-                "\nWrite enable error message: " <> enaMsg <>
-                "\nAddress error message: " <> addrMsg)
-
-  unknownAddr :: String -> Int -> a
-  unknownAddr msg n =
-    deepErrorX ("Write enabled, but address unknown; position " <> show n <>
-                "\nAddress error message: " <> msg)
 
   getConflict :: Bool -> Bool -> Bool -> Int -> Bool -> Int -> Maybe Conflict
   getConflict enA_ enB_ wenA addrA_ wenB addrB_ =
@@ -1548,31 +1616,7 @@ trueDualPortBlockRam# clkA enA weA addrA datA clkB enB weB addrB datB =
         (_, Left _) -> True
         _           -> addrA_ == addrB_
 
-  writeRam :: Bool -> Int -> a -> Seq a -> (Maybe a, Seq a)
-  writeRam enable addr dat mem
-    | Left enaMsg <- enableUndefined
-    , Left addrMsg <- addrUndefined
-    = let msg = "Unknown enable and address" <>
-                "\nWrite enable error message: " <> enaMsg <>
-                "\nAddress error message: " <> addrMsg
-       in ( Just (deepErrorX msg)
-          , Seq.fromFunction (natToNum @nAddrs)
-                             (unknownEnableAndAddr enaMsg addrMsg) )
-    | Left enaMsg <- enableUndefined
-    = let msg = "Write enable unknown; position" <> show addr <>
-                "\nWrite enable error message: " <> enaMsg
-       in writeRam True addr (deepErrorX msg) mem
-    | enable
-    , Left addrMsg <- addrUndefined
-    = ( Just (deepErrorX "Unknown address")
-      , Seq.fromFunction (natToNum @nAddrs) (unknownAddr addrMsg) )
-    | enable
-    = (Just dat, Seq.update addr dat mem)
-    | otherwise
-    = (Nothing, mem)
-   where
-    enableUndefined = isX enable
-    addrUndefined = isX addr
+
 
   go ::
     Seq a ->
@@ -1605,8 +1649,8 @@ trueDualPortBlockRam# clkA enA weA addrA datA clkB enB weB addrB datB =
           , deepErrorX "trueDualPortBlockRam: conflicting write/write queries" )
         _ -> (datA_,datB_)
 
-      (wroteA,ram1) = writeRam weA_ addrA_ datA1_ ram0
-      (wroteB,ram2) = writeRam weB_ addrB_ datB1_ ram1
+      (wroteA,ram1) = writeRam (SNat @nAddrs) weA_ addrA_ datA1_ ram0
+      (wroteB,ram2) = writeRam (SNat @nAddrs) weB_ addrB_ datB1_ ram1
 
       outA1 = case conflict of
         Just Conflict{cfRWA=IsDefined True} ->
@@ -1628,7 +1672,7 @@ trueDualPortBlockRam# clkA enA weA addrA datA clkB enB weB addrB datB =
 
     goA _ prevB | enA_ = out0 `seqX` (out0 :- as2, bs2)
      where
-      (wrote, !ram1) = writeRam weA_ addrA_ datA_ ram0
+      (wrote, !ram1) = writeRam (SNat @nAddrs) weA_ addrA_ datA_ ram0
       out0 = fromMaybe (ram1 `Seq.index` addrA_) wrote
       (as2, bs2) = go ram1 ticks as1 bs0 out0 prevB
 
@@ -1638,7 +1682,7 @@ trueDualPortBlockRam# clkA enA weA addrA datA clkB enB weB addrB datB =
 
     goB prevA _ | enB_ = out0 `seqX` (as2, out0 :- bs2)
      where
-      (wrote, !ram1) = writeRam weB_ addrB_ datB_ ram0
+      (wrote, !ram1) = writeRam (SNat @nAddrs) weB_ addrB_ datB_ ram0
       out0 = fromMaybe (ram1 `Seq.index` addrB_) wrote
       (as2, bs2) = go ram1 ticks as0 bs1 prevA out0
 
