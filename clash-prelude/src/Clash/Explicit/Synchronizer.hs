@@ -35,7 +35,7 @@ import Data.Constraint.Nat         (leTrans)
 import Data.Maybe                  (isJust)
 import GHC.TypeLits                (type (+), type (-), type (<=), type (^), KnownNat)
 
-import Clash.Class.BitPack         (boolToBV, unpack)
+import Clash.Class.BitPack         (BitPack, boolToBV, unpack)
 import Clash.Class.Resize          (truncateB)
 import Clash.Class.BitPack.BitIndex (slice)
 import Clash.Explicit.Mealy        (mealyB)
@@ -102,6 +102,7 @@ fifoMem
    . ( KnownDomain wdom
      , KnownDomain rdom
      , NFDataX a
+     , BitPack a
      , KnownNat addrSize
      , 1 <= addrSize )
   => Clock wdom
@@ -207,7 +208,8 @@ asyncFIFOSynchronizer
   :: ( KnownDomain wdom
      , KnownDomain rdom
      , 2 <= addrSize
-     , NFDataX a )
+     , NFDataX a
+     , BitPack a )
   => SNat addrSize
   -- ^ Size of the internally used addresses, the  FIFO contains @2^addrSize@
   -- elements.

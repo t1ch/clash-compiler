@@ -407,6 +407,7 @@ import           Prelude                 (Enum, Maybe, Eq)
 import           GHC.TypeLits            (KnownNat, type (^), type (<=))
 import           GHC.Stack               (HasCallStack, withFrozenCallStack)
 
+import           Clash.Class.BitPack     (BitPack)
 import qualified Clash.Explicit.BlockRam as E
 import           Clash.Promoted.Nat      (SNat)
 import           Clash.Signal
@@ -876,6 +877,7 @@ trueDualPortBlockRam ::
   , HiddenClock dom1
   , HiddenClock dom2
   , NFDataX a
+  , BitPack a
   )
   => Signal dom1 (E.RamOp nAddrs a)
   -- ^ RAM operation for port A
@@ -892,6 +894,7 @@ trueDualPortBlockRam inA inB =
   , KnownNat nAddrs
   , HiddenClock dom
   , NFDataX a
+  , BitPack a
   )
   => Signal dom (E.RamOp nAddrs a)
   -- ^ RAM operation for port A

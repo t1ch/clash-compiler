@@ -15,6 +15,7 @@ module Clash.Prelude.Synchronizer
   , asyncFIFOSynchronizer
   ) where
 
+import           Clash.Class.BitPack         (BitPack)
 import qualified Clash.Explicit.Synchronizer as E
 import           Clash.Promoted.Nat          (SNat)
 import           Clash.Signal
@@ -67,7 +68,8 @@ asyncFIFOSynchronizer
   :: ( HiddenClockResetEnable rdom
      , HiddenClockResetEnable wdom
      , 2 <= addrSize
-     , NFDataX a )
+     , NFDataX a
+     , BitPack a )
   => SNat addrSize
   -- ^ Size of the internally used addresses, the  FIFO contains @2^addrSize@
   -- elements.
