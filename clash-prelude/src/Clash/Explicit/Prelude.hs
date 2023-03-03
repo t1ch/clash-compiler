@@ -69,6 +69,7 @@ module Clash.Explicit.Prelude
   , readNew
     -- ** True dual-port block RAM
   , trueDualPortBlockRam
+  , trueDualPortBlockRamBe
   , RamOp(..)
     -- * Utility functions
   , window

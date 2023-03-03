@@ -391,6 +391,7 @@ This concludes the short introduction to using 'blockRam'.
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# LANGUAGE Trustworthy #-}
 
@@ -424,6 +425,7 @@ module Clash.Explicit.BlockRam
     -- * True dual-port block RAM
     -- $tdpbram
   , trueDualPortBlockRam
+  , trueDualPortBlockRamBe
   , RamOp(..)
     -- * Internal
   , blockRam#
@@ -442,8 +444,10 @@ import           Control.Monad          (forM_)
 import           Control.Monad.ST       (ST, runST)
 import           Control.Monad.ST.Unsafe (unsafeInterleaveST, unsafeIOToST, unsafeSTToIO)
 import           Data.Array.MArray      (newListArray)
+import           Data.Constraint        (Dict(..))
 import qualified Data.List              as L
 import           Data.Maybe             (isJust, fromMaybe)
+import           Data.Proxy             (Proxy(..))
 import           GHC.Arr
   (STArray, unsafeReadSTArray, unsafeWriteSTArray)
 import           Data.Bits              (shiftL, (.|.), (.&.), complement)
@@ -452,7 +456,8 @@ import           Data.Sequence          (Seq)
 import           Data.String.Interpolate(__i)
 import           GHC.Generics           (Generic)
 import           GHC.Stack              (HasCallStack, withFrozenCallStack)
-import           GHC.TypeLits           (KnownNat, type (^), type (<=), type (*), type Div)
+import           GHC.TypeLits           (KnownNat, type (^), type (<=), type (*))
+import           GHC.TypeLits.Extra     (type DivRU)
 import           Unsafe.Coerce          (unsafeCoerce)
 
 import           Clash.Annotations.Primitive
@@ -467,7 +472,7 @@ import           Clash.Signal.Internal
 import           Clash.Promoted.Nat     (SNat(..), natToNum)
 import           Clash.Signal.Bundle    (unbundle, bundle)
 import           Clash.Sized.BitVector  (BitVector)
-import           Clash.Sized.Internal.BitVector (BitVector(BV), undefined#)
+import           Clash.Sized.Internal.BitVector (BitVector(BV))
 import           Clash.Sized.Unsigned   (Unsigned)
 import           Clash.Sized.Index      (Index)
 import           Clash.Sized.Vector     (Vec, replicate, iterateI)
@@ -1180,23 +1185,7 @@ data RamOp n a
   -- ^ No operation
   deriving (Generic, NFDataX, Show)
 
-ramOpAddr :: RamOp n a -> Index n
-ramOpAddr (RamRead addr)    = addr
-ramOpAddr (RamWrite addr _) = addr
-ramOpAddr RamNoOp           = errorX "Address for No operation undefined"
-
-isRamWrite :: RamOp n a -> Bool
-isRamWrite (RamWrite {}) = True
-isRamWrite _             = False
-
-ramOpWriteVal :: RamOp n a -> Maybe a
-ramOpWriteVal (RamWrite _ val) = Just val
-ramOpWriteVal _                = Nothing
-
-isOp :: RamOp n a -> Bool
-isOp RamNoOp = False
-isOp _       = True
-
+{-# INLINE trueDualPortBlockRam #-}
 -- | Produces vendor-agnostic HDL that will be inferred as a true dual-port
 -- block RAM
 --
@@ -1224,12 +1213,112 @@ trueDualPortBlockRam ::
   -> (Signal domA a, Signal domB a)
   -- ^ Outputs data on /next/ cycle. When writing, the data written
   -- will be echoed. When reading, the read data is returned.
-
-{-# INLINE trueDualPortBlockRam #-}
 trueDualPortBlockRam = \clkA clkB opA opB ->
   trueDualPortBlockRamWrapper
-    clkA (isOp <$> opA) (isRamWrite <$> opA) (ramOpAddr <$> opA) (fromJustX . ramOpWriteVal <$> opA) (pure maxBound)
-    clkB (isOp <$> opB) (isRamWrite <$> opB) (ramOpAddr <$> opB) (fromJustX . ramOpWriteVal <$> opB) (pure maxBound)
+    -- Disable write enables
+    False
+
+    -- Port A
+    clkA (isOp <$> opA) (toByteMask <$> opA) (ramOpAddr <$> opA)
+    (fromJustX . ramOpWriteVal <$> opA)
+
+    -- Port B
+    clkB (isOp <$> opB) (toByteMask <$> opB) (ramOpAddr <$> opB)
+    (fromJustX . ramOpWriteVal <$> opB)
+ where
+  ramOpAddr :: RamOp n a -> Index n
+  ramOpAddr (RamRead addr)    = addr
+  ramOpAddr (RamWrite addr _) = addr
+  ramOpAddr RamNoOp           = errorX "Address for No operation undefined"
+
+  toByteMask :: Bounded b => RamOp n a -> b
+  toByteMask (RamWrite {}) = maxBound
+  toByteMask _             = minBound
+
+  ramOpWriteVal :: RamOp n a -> Maybe a
+  ramOpWriteVal (RamWrite _ val) = Just val
+  ramOpWriteVal _                = Nothing
+
+  isOp :: RamOp n a -> Bool
+  isOp RamNoOp = False
+  isOp _       = True
+
+-- | Port operation
+data BeRamOp nAddrs nBytes
+  = BeRamRead (Index nAddrs)
+  -- ^ Read from address
+  | BeRamWrite (Index nAddrs) (BitVector nBytes) (BitVector (nBytes * 8))
+  -- ^ Write data to address
+  | BeRamNoOp
+  -- ^ No operation
+  deriving (Generic, NFDataX, Show)
+
+
+-- | Postulates that multiplying some number /a/ by some constant /b/, and
+-- subsequently dividing that result by /b/ equals /a/.
+cancelMulDiv :: forall a b . (1 <= b) => Proxy a -> Proxy b -> Dict (DivRU (b * a) b ~ a)
+cancelMulDiv Proxy Proxy = unsafeCoerce (Dict :: Dict (a ~ a))
+
+-- | Produces vendor-agnostic HDL that will be inferred as a true dual-port
+-- block RAM with write byte enables.
+--
+-- Any value that is being written on a particular port is also the
+-- value that will be read on that port, i.e. the same-port read/write behavior
+-- is: WriteFirst. For mixed-port read/write, when port A writes to the address
+-- port B reads from, the output of port B is undefined, and vice versa.
+{-# INLINE trueDualPortBlockRamBe #-}
+trueDualPortBlockRamBe ::
+  forall nAddrs nBytes domA domB .
+  ( HasCallStack
+  , KnownNat nAddrs
+  , KnownNat nBytes
+  , KnownDomain domA
+  , KnownDomain domB
+  , 1 <= nBytes
+  )
+  => Clock domA
+  -- ^ Clock for port A
+  -> Clock domB
+  -- ^ Clock for port B
+  -> Signal domA (BeRamOp nAddrs nBytes)
+  -- ^ RAM operation for port A
+  -> Signal domB (BeRamOp nAddrs nBytes)
+  -- ^ RAM operation for port B
+  -> ( Signal domA (BitVector (8 * nBytes))
+     , Signal domB (BitVector (8 * nBytes)) )
+  -- ^ Outputs data on /next/ cycle. When writing, the data written
+  -- will be echoed. When reading, the read data is returned.
+trueDualPortBlockRamBe = \clkA clkB opA opB ->
+  case cancelMulDiv @nBytes @8 Proxy Proxy of
+    Dict ->
+      trueDualPortBlockRamWrapper
+        -- Enable write enables
+        True
+
+        -- Port A
+        clkA (isOp <$> opA) (toByteMask <$> opA) (ramOpAddr <$> opA)
+        (fromJustX . ramOpWriteVal <$> opA)
+
+        -- Port B
+        clkB (isOp <$> opB) (toByteMask <$> opB) (ramOpAddr <$> opB)
+        (fromJustX . ramOpWriteVal <$> opB)
+ where
+  ramOpAddr :: BeRamOp nAddrs nBytes -> Index nAddrs
+  ramOpAddr (BeRamRead addr)      = addr
+  ramOpAddr (BeRamWrite addr _ _) = addr
+  ramOpAddr BeRamNoOp             = errorX "Address for No operation undefined"
+
+  toByteMask :: BeRamOp nAddrs nBytes -> BitVector nBytes
+  toByteMask (BeRamWrite _ mask _) = mask
+  toByteMask _                     = 0
+
+  ramOpWriteVal :: BeRamOp nAddrs nBytes -> Maybe (BitVector (8 * nBytes))
+  ramOpWriteVal (BeRamWrite _ _ val) = Just val
+  ramOpWriteVal _                  = Nothing
+
+  isOp :: BeRamOp nAddrs nBytes -> Bool
+  isOp BeRamNoOp = False
+  isOp _         = True
 
 toMaybeX :: a -> MaybeX a
 toMaybeX a =
@@ -1257,46 +1346,39 @@ byteMaskToBitMask = pack . CV.map go . unpack
   go True = maxBound
   go False = 0
 
--- | Write to a RAM and account for undefined values in the write enable,
--- address, byte enable, and data to write. Return read after write value.
+-- | Write to a RAM and account for undefined values in the address, byte enable,
+-- and data to write. Return read after write value.
 --
--- >>> let write ena addr byteEna dat = showX (F.toList (snd (writeRam d2 ena addr byteEna dat [10, 20 :: Word16])))
--- >>> write False 0 30 maxBound
+-- >>> let write byteEna addr dat = showX (F.toList (snd (writeRam d2 byteEna addr dat [10, 20 :: Word16])))
+-- >>> doWrite = 0b11
+-- >>> dontWrite = 0b00
+-- >>> write dontWrite 0 30
 -- "[10,20]"
--- >>> write True 0 30 maxBound
+-- >>> write doWrite 0 30
 -- "[30,20]"
--- >>> write (errorX "X") 0 30 maxBound
+-- >>> write (errorX "X") 0 30
 -- "[undefined,20]"
--- >>> write False (errorX "X") 30 maxBound
+-- >>> write dontWrite (errorX "X") 30
 -- "[10,20]"
--- >>> write True (errorX "X") 30 maxBound
+-- >>> write doWrite (errorX "X") 30
 -- "[undefined,undefined]"
--- >>> write True 0 (errorX "X") maxBound
+-- >>> write doWrite 0 (errorX "X")
 -- "[undefined,20]"
 --
--- This function only accounts for byte enables if the write enable and address
--- are fully defined. E.g., even if the byte enable mask is set to 'minBound'
--- (write nothing), setting the address as undefined and the write enable to
--- 'True' will yield a fully undefined memory:
+-- Examples using byte enables:
 --
--- >>> write True (errorX "X") 30 minBound
--- "[undefined,undefined]"
---
--- Technically, it could return the memory unchanged, but this is not implemented
--- due to implementation complexity concerns. Examples using byte enables:
---
--- >>> write True 0 30 0b11
+-- >>> write 0b11 0 30
 -- "[30,20]"
--- >>> write True 0 30 0b01
+-- >>> write 0b01 0 30
 -- "[30,20]"
--- >>> write True 0 30 0b10
+-- >>> write 0b10 0 30
 -- "[10,20]"
--- >>> write True 0 30 0b00
+-- >>> write 0b00 0 30
 -- "[10,20]"
 --
 -- Byte enables can also be partially undefined:
 --
--- >>> let writeBv byteEna dat = F.toList (snd (writeRam d2 True 0 byteEna dat [10, 20 :: BitVector 16]))
+-- >>> let writeBv dat byteEna = F.toList (snd (writeRam d2 byteEna 0 dat [10, 20 :: BitVector 16]))
 -- >>> writeBv 0b1010_1010_1010_1010 $(bLit "11")
 -- [0b1010_1010_1010_1010,0b0000_0000_0001_0100]
 -- >>> writeBv 0b1010_1010_1010_1010 $(bLit "1.")
@@ -1304,32 +1386,30 @@ byteMaskToBitMask = pack . CV.map go . unpack
 -- >>> writeBv 0b1010_1010_1010_1010 $(bLit ".1")
 -- [0b.0.0_.0.0_1010_1010,0b0000_0000_0001_0100]
 -- >>> writeBv 0b1010_1010_1010_1010 $(bLit "..")
--- [0b.0.0_.0.0_.0.0_.0.0,0b0000_0000_0001_0100]
+-- [0b...._...._...._....,0b0000_0000_0001_0100]
 -- >>> writeBv 0b1010_1010_1010_1010 (errorX "X")
--- [0b.0.0_.0.0_.0.0_.0.0,0b0000_0000_0001_0100]
+-- [0b...._...._...._....,0b0000_0000_0001_0100]
 --
 writeRam ::
   forall nAddrs a nBytes .
   ( NFDataX a
   , BitPack a
   , KnownNat nBytes
-  , nBytes ~ Div (BitSize a) 8
+  , nBytes ~ DivRU (BitSize a) 8
   ) =>
   SNat nAddrs ->
-  -- | Write enable
-  Bool ->
+  -- | Byte enable
+  BitVector nBytes ->
   -- | Address
   Int ->
   -- | Data to write
   a ->
-  -- | Byte enable
-  BitVector nBytes ->
   -- | Memory to write to
   Seq a ->
   -- | (Read after write value, new memory)
   (Maybe a, Seq a)
-writeRam nAddrs@SNat enable addr dat byteEnable mem
-  -- Undefined enable and address
+writeRam nAddrs@SNat byteEnable addr dat mem
+  -- Fully undefined enable and address
   | Left enaMsg <- enableUndefined
   , Left addrMsg <- addrUndefined
   = let msg = "Unknown enable and address" <>
@@ -1339,30 +1419,29 @@ writeRam nAddrs@SNat enable addr dat byteEnable mem
         , Seq.fromFunction (natToNum @nAddrs)
                             (unknownEnableAndAddr enaMsg addrMsg) )
 
-  -- Undefined enable
+  -- Fully undefined enable
   | Left enaMsg <- enableUndefined
   = let msg = "Write enable unknown; position" <> show addr <>
               "\nWrite enable error message: " <> enaMsg
-      in writeRam nAddrs True addr (deepErrorX msg) maxBound mem
+      in writeRam nAddrs maxBound addr (deepErrorX msg) mem
 
-  -- Undefined address
-  | enable
-  , Left addrMsg <- addrUndefined
+  -- Undefined address, full byte enable or byte enable partially undefined
+  | Left addrMsg <- addrUndefined
+  , not disable
   = ( Just (deepErrorX "Unknown address")
     , Seq.fromFunction (natToNum @nAddrs) (unknownAddr addrMsg) )
 
-  -- Undefined byte enable
-  | enable
-  , Left _ <- byteEnableUndefined
-  = writeRam nAddrs True addr dat undefined# mem
+  -- Read, byte enable fully defined and zero
+  | disable
+  = (Nothing, mem)
 
-  -- Write with defined and fully set byte enable mask
+  -- Write full word, byte enable fully defined and max bound
   | enable
-  , isDefinedMaxBound byteEnable
+  , not disable
   = (Just dat, Seq.update addr dat mem)
 
   -- Write with a partially undefined and/or partially unset byte enable mask
-  | enable
+  | otherwise
   = let
       goAdjust :: a -> a
       goAdjust oldDat =
@@ -1382,17 +1461,21 @@ writeRam nAddrs@SNat enable addr dat byteEnable mem
     in
       (Just dat, Seq.adjust' goAdjust addr mem)
 
-  -- Read (do nothing)
-  | otherwise
-  = (Nothing, mem)
  where
-  enableUndefined = isX enable
+  enableUndefined = isX byteEnable
+  enable = isDefinedMaxBound byteEnable
+  disable = isDefinedMinBound byteEnable
   addrUndefined = isX addr
-  byteEnableUndefined = isX byteEnable
+
+  maxBoundMask = (1 `shiftL` natToNum @nBytes) - 1
 
   isDefinedMaxBound :: forall n. KnownNat n => BitVector n -> Bool
-  isDefinedMaxBound (BV 0 n) = n == (1 `shiftL` natToNum @n) - 1
+  isDefinedMaxBound (BV 0 n) = n == maxBoundMask
   isDefinedMaxBound _        = False
+
+  isDefinedMinBound :: forall n. KnownNat n => BitVector n -> Bool
+  isDefinedMinBound (BV 0 0) = True
+  isDefinedMinBound _        = False
 
   unknownEnableAndAddr :: String -> String -> Int -> a
   unknownEnableAndAddr enaMsg addrMsg n =
@@ -1418,8 +1501,8 @@ writeRam nAddrs@SNat enable addr dat byteEnable mem
 -- logic to the module / architecture, and synthesis will no longer infer a
 -- multi-clock true dual-port block RAM. This wrapper pushes the primitive out
 -- into its own module / architecture.
-trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB byteEnaB =
-  trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB byteEnaB
+trueDualPortBlockRamWrapper byteEnables clkA enA byteEnaA addrA datA clkB enB byteEnaB addrB datB =
+  trueDualPortBlockRam#     byteEnables clkA enA byteEnaA addrA datA clkB enB byteEnaB addrB datB
 {-# NOINLINE trueDualPortBlockRamWrapper #-}
 
 {-# NOINLINE trueDualPortBlockRam# #-}
@@ -1433,25 +1516,24 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
      :> _knownDomainB
      :> _nfdataX
      :> _bitpack
-     :> _knownNatNBytes
+     :> knownNatNBytes
      :> _nBytes
+     :> byteEnables
 
      :> clockA
      :> enaA
-     :> wenaA
+     :> byteEnaA
      :> addrA
      :> datA
-     :> _byteEnaA
 
      :> clockB
      :> enaB
-     :> wenaB
+     :> byteEnaB
      :> addrB
      :> datB
-     :> _byteEnaB
 
      :> Nil
-     ) = CV.indicesI @20
+     ) = CV.indicesI @19
 
     (   symBlockName
      :> symDoutA
@@ -1468,6 +1550,7 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         ~GENSYM[~RESULT_trueDualPortBlockRam][#{symBlockName}] : block
           -- Shared memory
           type mem_type is array ( ~LIT[#{knownNatAddrs}]-1 downto 0 ) of ~TYP[#{datA}];
+          constant all_ones : std_logic_vector(~LIT[#{knownNatNBytes}]-1 downto 0) := (others => '1');
           shared variable mem : mem_type;
           signal ~GENSYM[a_dout][#{symDoutA}] : ~TYP[#{datA}];
           signal ~GENSYM[b_dout][#{symDoutB}] : ~TYP[#{datB}];
@@ -1478,9 +1561,17 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
           begin
               if(rising_edge(~ARG[#{clockA}])) then
                     if(~ARG[#{enaA}]) then
-                      if(~ARG[#{wenaA}]) then
+                      ~IF~LIT[#{byteEnables}]~THEN
+                      for i in 0 to ~LIT[#{knownNatNBytes}] - 1 loop
+                        if ~ARG[#{byteEnaA}](i) = '1' then
+                          mem(~IF~SIZE[~TYP[#{addrA}]]~THENto_integer(~ARG[#{addrA}])~ELSE0~FI)((i + 1) * 8 - 1 downto i * 8) := ~ARG[#{datA}]((i + 1) * 8 - 1 downto i * 8);
+                        end if;
+                      end loop;
+                      ~ELSE
+                      if(~ARG[#{byteEnaA}] = all_ones) then
                           mem(~IF~SIZE[~TYP[#{addrA}]]~THENto_integer(~ARG[#{addrA}])~ELSE0~FI) := ~ARG[#{datA}];
                       end if;
+                      ~FI
                       ~SYM[#{symDoutA}] <= mem(~IF~SIZE[~TYP[#{addrA}]]~THENto_integer(~ARG[#{addrA}])~ELSE0~FI);
                   end if;
               end if;
@@ -1491,9 +1582,17 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
           begin
               if(rising_edge(~ARG[#{clockB}])) then
                   if(~ARG[#{enaB}]) then
-                      if(~ARG[#{wenaB}]) then
+                      ~IF~LIT[#{byteEnables}]~THEN
+                      for i in 0 to ~LIT[#{knownNatNBytes}] - 1 loop
+                        if ~ARG[#{byteEnaB}](i) = '1' then
+                          mem(~IF~SIZE[~TYP[#{addrB}]]~THENto_integer(~ARG[#{addrB}])~ELSE0~FI)((i + 1) * 8 - 1 downto i * 8) := ~ARG[#{datB}]((i + 1) * 8 - 1 downto i * 8);
+                        end if;
+                      end loop;
+                      ~ELSE
+                      if(~ARG[#{byteEnaB}] = all_ones) then
                           mem(~IF~SIZE[~TYP[#{addrB}]]~THENto_integer(~ARG[#{addrB}])~ELSE0~FI) := ~ARG[#{datB}];
                       end if;
+                      ~FI
                       ~SYM[#{symDoutB}] <= mem(~IF~SIZE[~TYP[#{addrB}]]~THENto_integer(~ARG[#{addrB}])~ELSE0~FI);
                   end if;
               end if;
@@ -1512,31 +1611,31 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
      :> knownDomainB
      :> _nfdataX
      :> _bitpack
-     :> _knownNatNBytes
+     :> knownNatNBytes
      :> _nBytes
+     :> byteEnables
 
      :> clockA
      :> enaA
-     :> wenaA
+     :> byteEnaA
      :> addrA
      :> datA
-     :> _byteEnaA
 
      :> clockB
      :> enaB
-     :> wenaB
+     :> byteEnaB
      :> addrB
      :> datB
-     :> _byteEnaB
 
      :> Nil
-     ) = CV.indicesI @20
+     ) = CV.indicesI @19
 
     (   symMemName
+     :> symAllOnes
      :> symDoutA
      :> symDoutB
      :> Nil
-     ) = CV.indicesI @3
+     ) = CV.indicesI @4
   in
     InlineYamlPrimitive [SystemVerilog] [__i|
     BlackBox:
@@ -1546,6 +1645,8 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         // trueDualPortBlockRam begin
         // Shared memory
         logic [~SIZE[~TYP[#{datA}]]-1:0] ~GENSYM[mem][#{symMemName}] [~LIT[#{knownNatAddrs}]-1:0];
+        logic [~LIT[#{knownNatNBytes}]-1:0] ~GENSYM[all_ones][#{symAllOnes}];
+        assign ~SYM[#{symAllOnes}] = {~LIT[#{knownNatNBytes}]{1'b1}};
 
         ~SIGD[~GENSYM[data_slow][#{symDoutA}]][#{datA}];
         ~SIGD[~GENSYM[data_fast][#{symDoutB}]][#{datB}];
@@ -1554,10 +1655,19 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         always @(~IF~ACTIVEEDGE[Rising][#{knownDomainA}]~THENposedge~ELSEnegedge~FI ~ARG[#{clockA}]) begin
             if(~ARG[#{enaA}]) begin
                 ~SYM[#{symDoutA}] <= ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI];
-                if(~ARG[#{wenaA}]) begin
+                ~IF~LIT[#{byteEnables}]~THEN
+                for(i=0; i<~LIT[#{knownNatNBytes}]; i=i+1) begin
+                  if(~ARG[#{byteEnaA}][i]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI][i*8 +: 8] <= ~ARG[#{datA}][i*8 +: 8];
                     ~SYM[#{symDoutA}] <= ~ARG[#{datA}];
-                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI] <= ~ARG[#{datA}];
+                  end
                 end
+                ~ELSE
+                if(~ARG[#{byteEnaA}] == ~SYM[#{symAllOnes}]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI] <= ~ARG[#{datA}];
+                    ~SYM[#{symDoutA}] <= ~ARG[#{datA}];
+                end
+                ~FI
             end
         end
 
@@ -1565,10 +1675,19 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         always @(~IF~ACTIVEEDGE[Rising][#{knownDomainB}]~THENposedge~ELSEnegedge~FI ~ARG[#{clockB}]) begin
             if(~ARG[#{enaB}]) begin
                 ~SYM[#{symDoutB}] <= ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI];
-                if(~ARG[#{wenaB}]) begin
+                ~IF~LIT[#{byteEnables}]~THEN
+                for(i=0; i<~LIT[#{knownNatNBytes}]; i=i+1) begin
+                  if(~ARG[#{byteEnaB}][i]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI][i*8 +: 8] <= ~ARG[#{datB}][i*8 +: 8];
+                    ~SYM[#{symDoutB}] <= ~ARG[#{datB}];
+                  end
+                end
+                ~ELSE
+                if(~ARG[#{byteEnaB}] == ~SYM[#{symAllOnes}]) begin
                     ~SYM[#{symDoutB}] <= ~ARG[#{datB}];
                     ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI] <= ~ARG[#{datB}];
                 end
+                ~FI
             end
         end
 
@@ -1584,31 +1703,31 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
      :> knownDomainB
      :> _nfdataX
      :> _bitpack
-     :> _knownNatNBytes
+     :> knownNatNBytes
      :> _nBytes
+     :> byteEnables
 
      :> clockA
      :> enaA
-     :> wenaA
+     :> byteEnaA
      :> addrA
      :> datA
-     :> _byteEnaA
 
      :> clockB
      :> enaB
-     :> wenaB
+     :> byteEnaB
      :> addrB
      :> datB
-     :> _byteEnaB
 
      :> Nil
-     ) = CV.indicesI @20
+     ) = CV.indicesI @19
 
     (   symMemName
+     :> symAllOnes
      :> symDoutA
      :> symDoutB
      :> Nil
-     ) = CV.indicesI @3
+     ) = CV.indicesI @4
   in
     InlineYamlPrimitive [Verilog] [__i|
     BlackBox:
@@ -1619,6 +1738,9 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         // Shared memory
         reg [~SIZE[~TYP[#{datA}]]-1:0] ~GENSYM[mem][#{symMemName}] [~LIT[#{knownNatAddrs}]-1:0];
 
+        wire [~LIT[#{knownNatNBytes}]-1:0] ~GENSYM[all_ones][#{symAllOnes}];
+        assign ~SYM[#{symAllOnes}] = {~LIT[#{knownNatNBytes}]{1'b1}};
+
         reg ~SIGD[~GENSYM[data_slow][#{symDoutA}]][#{datA}];
         reg ~SIGD[~GENSYM[data_fast][#{symDoutB}]][#{datB}];
 
@@ -1626,10 +1748,19 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         always @(~IF~ACTIVEEDGE[Rising][#{knownDomainA}]~THENposedge~ELSEnegedge~FI ~ARG[#{clockA}]) begin
             if(~ARG[#{enaA}]) begin
                 ~SYM[#{symDoutA}] <= ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI];
-                if(~ARG[#{wenaA}]) begin
+                ~IF~LIT[#{byteEnables}]~THEN
+                for(i=0; i<~LIT[#{knownNatNBytes}]; i=i+1) begin
+                  if(~ARG[#{byteEnaA}][i]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI][i*8 +: 8] <= ~ARG[#{datA}][i*8 +: 8];
                     ~SYM[#{symDoutA}] <= ~ARG[#{datA}];
-                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI] <= ~ARG[#{datA}];
+                  end
                 end
+                ~ELSE
+                if(~ARG[#{byteEnaA}] == ~SYM[#{symAllOnes}]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrA}]]~THEN~ARG[#{addrA}]~ELSE0~FI] <= ~ARG[#{datA}];
+                    ~SYM[#{symDoutA}] <= ~ARG[#{datA}];
+                end
+                ~FI
             end
         end
 
@@ -1637,10 +1768,19 @@ trueDualPortBlockRamWrapper clkA enA weA addrA datA byteEnaA clkB enB weB addrB 
         always @(~IF~ACTIVEEDGE[Rising][#{knownDomainB}]~THENposedge~ELSEnegedge~FI ~ARG[#{clockB}]) begin
             if(~ARG[#{enaB}]) begin
                 ~SYM[#{symDoutB}] <= ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI];
-                if(~ARG[#{wenaB}]) begin
+                ~IF~LIT[#{byteEnables}]~THEN
+                for(i=0; i<~LIT[#{knownNatNBytes}]; i=i+1) begin
+                  if(~ARG[#{byteEnaB}][i]) begin
+                    ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI][i*8 +: 8] <= ~ARG[#{datB}][i*8 +: 8];
+                    ~SYM[#{symDoutB}] <= ~ARG[#{datB}];
+                  end
+                end
+                ~ELSE
+                if(~ARG[#{byteEnaB}] == ~SYM[#{symAllOnes}]) begin
                     ~SYM[#{symDoutB}] <= ~ARG[#{datB}];
                     ~SYM[#{symMemName}][~IF~SIZE[~TYP[#{addrB}]]~THEN~ARG[#{addrB}]~ELSE0~FI] <= ~ARG[#{datB}];
                 end
+                ~FI
             end
         end
 
@@ -1659,35 +1799,33 @@ trueDualPortBlockRam#, trueDualPortBlockRamWrapper ::
   , NFDataX a
   , BitPack a
   , KnownNat nBytes -- XXX: Can be inferred at call-site. Why not here?
-  , nBytes ~ Div (BitSize a) 8
+  , nBytes ~ DivRU (BitSize a) 8
   ) =>
+  -- | Enable byte enables? (only used in the blackbox)
+  Bool ->
 
   Clock domA ->
   -- | Enable
   Signal domA Bool ->
-  -- | Write enable
-  Signal domA Bool ->
+  -- | Write byte enable
+  Signal domA (BitVector nBytes) ->
   -- | Address
   Signal domA (Index nAddrs) ->
   -- | Write data
   Signal domA a ->
-  -- | Write byte enable
-  Signal domA (BitVector nBytes) ->
 
   Clock domB ->
   -- | Enable
   Signal domB Bool ->
-  -- | Write enable
-  Signal domB Bool ->
+  -- | Write byte enable
+  Signal domB (BitVector nBytes) ->
   -- | Address
   Signal domB (Index nAddrs) ->
   -- | Write data
   Signal domB a ->
-  -- | Write byte enable
-  Signal domB (BitVector nBytes) ->
 
   (Signal domA a, Signal domB a)
-trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB byteEnaB =
+trueDualPortBlockRam# !_ clkA enA byteEnaA addrA datA clkB enB byteEnaB addrB datB =
   ( startA :- outA
   , startB :- outB )
  where
@@ -1695,8 +1833,8 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
     go
       (Seq.fromFunction (natToNum @nAddrs) initElement)
       (clockTicks clkA clkB)
-      (bundle (enA, weA, fromIntegral <$> addrA, datA, byteEnaA))
-      (bundle (enB, weB, fromIntegral <$> addrB, datB, byteEnaB))
+      (bundle (enA, byteEnaA, fromIntegral <$> addrA, datA))
+      (bundle (enB, byteEnaB, fromIntegral <$> addrB, datB))
       startA startB
 
   startA = deepErrorX $ "trueDualPortBlockRam: Port A: First value undefined"
@@ -1707,14 +1845,14 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
     deepErrorX ("Unknown initial element; position " <> show n)
 
 
-  getConflict :: Bool -> Bool -> Bool -> Int -> Bool -> Int -> Maybe Conflict
+  getConflict :: Bool -> Bool -> BitVector nBytes -> Int -> BitVector nBytes -> Int -> Maybe Conflict
   getConflict enA_ enB_ wenA addrA_ wenB addrB_ =
     -- If port A or port B is writing on (potentially!) the same address,
     -- there's a conflict
     if sameAddr then Just conflict else Nothing
    where
-    wenAX = toMaybeX wenA
-    wenBX = toMaybeX wenB
+    wenAX = toMaybeX (wenA == maxBound)
+    wenBX = toMaybeX (wenB == maxBound)
 
     mergeX IsX b = b
     mergeX a IsX = a
@@ -1735,8 +1873,8 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
   go ::
     Seq a ->
     [ClockAB] ->
-    Signal domA (Bool, Bool, Int, a, BitVector nBytes) ->
-    Signal domB (Bool, Bool, Int, a, BitVector nBytes) ->
+    Signal domA (Bool, BitVector nBytes, Int, a) ->
+    Signal domB (Bool, BitVector nBytes, Int, a) ->
     a -> a ->
     (Signal domA a, Signal domB a)
   go _ [] _ _ =
@@ -1747,12 +1885,12 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
       ClockB -> goB
       ClockAB -> goBoth
    where
-    (enA_, weA_, addrA_, datA_, byteEnaA_) :- as1 = as0
-    (enB_, weB_, addrB_, datB_, byteEnaB_) :- bs1 = bs0
+    (enA_, byteEnaA_, addrA_, datA_) :- as1 = as0
+    (enB_, byteEnaB_, addrB_, datB_) :- bs1 = bs0
 
     goBoth prevA prevB = outA2 `seqX` outB2 `seqX` (outA2 :- as2, outB2 :- bs2)
      where
-      conflict = getConflict enA_ enB_ weA_ addrA_ weB_ addrB_
+      conflict = getConflict enA_ enB_ byteEnaA_ addrA_ byteEnaB_ addrB_
 
       (datA1_,datB1_) = case conflict of
         Just Conflict{cfWW=IsDefined True} ->
@@ -1763,8 +1901,8 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
           , deepErrorX "trueDualPortBlockRam: conflicting write/write queries" )
         _ -> (datA_,datB_)
 
-      (wroteA,ram1) = writeRam (SNat @nAddrs) weA_ addrA_ datA1_ byteEnaA_ ram0
-      (wroteB,ram2) = writeRam (SNat @nAddrs) weB_ addrB_ datB1_ byteEnaB_ ram1
+      (wroteA,ram1) = writeRam (SNat @nAddrs) byteEnaA_ addrA_ datA1_ ram0
+      (wroteB,ram2) = writeRam (SNat @nAddrs) byteEnaB_ addrB_ datB1_ ram1
 
       outA1 = case conflict of
         Just Conflict{cfRWA=IsDefined True} ->
@@ -1786,7 +1924,7 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
 
     goA _ prevB | enA_ = out0 `seqX` (out0 :- as2, bs2)
      where
-      (wrote, !ram1) = writeRam (SNat @nAddrs) weA_ addrA_ datA_ byteEnaA_ ram0
+      (wrote, !ram1) = writeRam (SNat @nAddrs) byteEnaA_ addrA_ datA_ ram0
       out0 = fromMaybe (ram1 `Seq.index` addrA_) wrote
       (as2, bs2) = go ram1 ticks as1 bs0 out0 prevB
 
@@ -1796,7 +1934,7 @@ trueDualPortBlockRam# clkA enA weA addrA datA byteEnaA clkB enB weB addrB datB b
 
     goB prevA _ | enB_ = out0 `seqX` (as2, out0 :- bs2)
      where
-      (wrote, !ram1) = writeRam (SNat @nAddrs) weB_ addrB_ datB_ byteEnaB_ ram0
+      (wrote, !ram1) = writeRam (SNat @nAddrs) byteEnaB_ addrB_ datB_ ram0
       out0 = fromMaybe (ram1 `Seq.index` addrB_) wrote
       (as2, bs2) = go ram1 ticks as0 bs1 prevA out0
 
