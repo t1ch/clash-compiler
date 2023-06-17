@@ -39,6 +39,7 @@ import Data.Bifunctor (bimap)
 import Data.Coerce (coerce)
 import qualified Data.Either as Either
 import Data.Functor.Const (Const(..))
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Monoid as Monoid (getAny)
 import qualified Data.Set.Ordered as OSet
@@ -446,31 +447,31 @@ specialize' (TransformContext is0 _) e (Var f, args, ticks) specArgIn = do
                                        args
               -- Determine name the resulting specialized function, and the
               -- form of the specialized-on argument
-              (fId,inl',specArg') <- case specArg of
+              (newName, inl', specArg') <- case specArg of
                 Left a@(collectArgsTicks -> (Var g,gArgs,_gTicks)) -> if isPolyFun tcm a
                     then do
                       -- In case we are specialising on an argument that is a
-                      -- global function then we use that function's name as the
-                      -- name of the specialized higher-order function.
+                      -- global function then we use that function's name as part
+                      -- of the name of the specialized higher-order function.
                       -- Additionally, we will return the body of the global
                       -- function, instead of a variable reference to the
                       -- global function.
                       --
                       -- This will turn things like @mealy g k@ into a new
-                      -- binding @g'@ where both the body of @mealy@ and @g@
+                      -- binding @mealy_g@ where both the body of @mealy@ and @g@
                       -- are inlined, meaning the state-transition-function
                       -- and the memory element will be in a single function.
                       gTmM <- fmap (UniqMap.lookup g) $ Lens.use bindings
                       return
-                        ( g
+                        ( specializeName (varName f) (varName g)
                         , preferNoInline inl (maybe noUserInline bindingSpec gTmM)
                         , maybe specArg (Left . (`mkApps` gArgs) . bindingTerm) gTmM
                         )
-                    else return (f,inl,specArg)
-                _ -> return (f,inl,specArg)
+                    else return (varName f, inl, specArg)
+                _ -> return (varName f, inl, specArg)
               -- Create specialized functions
               let newBody = mkAbstraction (mkApps bodyTm (argVars ++ [specArg'])) (boundArgs ++ specBndrs)
-              newf <- mkFunction (varName fId) sp inl' newBody
+              newf <- mkFunction newName sp inl' newBody
               -- Remember specialization
               (extra.specialisationHistory) %= UniqMap.insertWith (+) f 1
               (extra.specialisationCache)  %= Map.insert (f,argLen,specAbs) newf
@@ -485,6 +486,17 @@ specialize' (TransformContext is0 _) e (Var f, args, ticks) specArgIn = do
 #else
     noUserInline = NoUserInline
 #endif
+
+    specializeName :: Name Term -> Name Term -> Name Term
+    specializeName n0 n1 =
+      n1{nameOcc=stripMods (nameOcc n0) <> "_" <> stripMods (nameOcc n1)}
+
+    stripMods :: Text.Text -> Text.Text
+    stripMods t = fromMaybe t (lastMaybe (Text.splitOn "." t))
+
+    lastMaybe :: [a] -> Maybe a
+    lastMaybe [] = Nothing
+    lastMaybe (x:xs) = Just $ last (x:xs)
 
     collectBndrsMinusApps :: Term -> [Name a]
     collectBndrsMinusApps = reverse . go []

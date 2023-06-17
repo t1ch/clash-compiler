@@ -52,13 +52,15 @@ mainVHDL = do
 
   -- 'bbWrapper' should get its own file, so we expect two: one for 'topEntity',
   -- one for 'bbWrapper'.
-  --
-  -- XXX: Naming doesn't make sense. 'topEntity1' should be called 'bbWrapper'.
   let hdlDir = topDir </> show 'topEntity
   actual0 <- sort <$> globDir1 "*.vhdl" hdlDir
   let
     actual1 = P.map (P.drop (P.length hdlDir + 1)) actual0
-    expected = ["T2502_topEntity_types.vhdl", "topEntity.vhdl", "topEntity1.vhdl"]
+    expected =
+      [ "T2502_topEntity_types.vhdl"
+      , "bbWrapper_topEntity1.vhdl"
+      , "topEntity.vhdl"
+      ]
   when
     (actual1 /= expected)
     (throwIO $ AssertionFailed $ "Expected " <> show expected <> " got " <> show actual1)
