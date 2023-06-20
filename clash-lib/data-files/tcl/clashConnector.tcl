@@ -150,6 +150,7 @@ namespace eval clash {
         }
         PerformAction {
             create_project -in_memory
+            set_property part xcku040-ffva1156-2-e [current_project]
         }
         set ips [createIp {*}$args]
         PerformAction {
