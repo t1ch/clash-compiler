@@ -21,7 +21,7 @@ module Clash.Explicit.Reset
   , holdReset
   , convertReset
 
-    -- Reexports
+    -- Re-exports
   , Reset
   , resetGen
   , resetGenN

@@ -23,7 +23,7 @@ import GHC.TypeLits (KnownNat, type (<=))
 -- >>> import Clash.Sized.Signed (Signed)
 -- >>> import Clash.Sized.Unsigned (Unsigned)
 
--- | 'Clash.Class.Counter.Counter' is a class that composes multiple counters
+-- | t'Clash.Class.Counter.Counter' is a class that composes multiple counters
 -- into a single one. It is similar to odometers found in olds cars,
 -- once all counters reach their maximum they reset to zero - i.e. odometer
 -- rollover. See 'Clash.Class.Counter.countSucc' and 'Clash.Class.Counter.countPred'
