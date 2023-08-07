@@ -146,7 +146,7 @@ Clash and other HDLs
 - **Q**: Do I need to know existing RTL/HDL languages in order to use Clash?
 
   **A**: Clash currently outputs VHDL, Verilog, and SystemVerilog. While it's
-  not necessary to understand these descriptions, you will need to some
+  not necessary to understand these descriptions, you will need to have some
   understanding of vendor tools to actually deploy it.
 
 ----
